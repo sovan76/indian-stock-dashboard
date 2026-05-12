@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import express from 'express';
 import cors from 'cors';
 
@@ -6,126 +7,256 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
-const nifty50 = {
-  symbol: 'NIFTY 50',
-  value: 22682.15,
-  change: 128.4,
-  changePercent: 0.57,
-  asOf: new Date().toISOString(),
-  dayRange: '22,512.35 - 22,724.80',
-  marketStatus: 'Sample market snapshot'
-};
-
-const companies = {
-  smallCap: [
-    { name: 'Central Depository Services', symbol: 'CDSL', sector: 'Financial Services', marketCapCr: 26780, price: 1674.2, changePercent: 1.42 },
-    { name: 'Kaynes Technology India', symbol: 'KAYNES', sector: 'Electronics Manufacturing', marketCapCr: 32450, price: 5021.3, changePercent: -0.38 },
-    { name: 'KFin Technologies', symbol: 'KFINTECH', sector: 'Capital Markets', marketCapCr: 20340, price: 1192.7, changePercent: 0.84 },
-    { name: 'Affle India', symbol: 'AFFLE', sector: 'Digital Advertising', marketCapCr: 19120, price: 1364.1, changePercent: 2.06 },
-    { name: 'Data Patterns', symbol: 'DATAPATTNS', sector: 'Defence Electronics', marketCapCr: 15280, price: 2732.5, changePercent: -0.73 }
-  ],
-  midCap: [
-    { name: 'Max Healthcare Institute', symbol: 'MAXHEALTH', sector: 'Healthcare', marketCapCr: 93210, price: 960.4, changePercent: 0.44 },
-    { name: 'Persistent Systems', symbol: 'PERSISTENT', sector: 'IT Services', marketCapCr: 82760, price: 5331.8, changePercent: 1.18 },
-    { name: 'Indian Hotels Company', symbol: 'INDHOTEL', sector: 'Hotels', marketCapCr: 82150, price: 577.9, changePercent: -0.21 },
-    { name: 'Dixon Technologies', symbol: 'DIXON', sector: 'Electronics Manufacturing', marketCapCr: 68540, price: 11445.0, changePercent: 1.71 },
-    { name: 'Bharat Forge', symbol: 'BHARATFORG', sector: 'Auto Components', marketCapCr: 60280, price: 1294.6, changePercent: 0.12 }
-  ]
-};
-
-const fallbackNews = [
+const starterNotes = [
   {
-    title: 'Indian equities end higher as banks and IT stocks support gains',
-    source: 'Market Desk',
-    url: 'https://www.nseindia.com/',
-    publishedAt: new Date().toISOString(),
-    summary: 'Benchmark indices saw broad participation while investors tracked earnings, crude prices, and global cues.'
+    title: 'Launch plan',
+    content: '## Today\n- [x] Sketch the workspace\n- [ ] Connect MongoDB\n- [ ] Invite collaborators\n\nKeep the first release focused, fast, and pleasant to use.',
+    folder: 'Work',
+    tags: ['planning', 'release'],
+    color: 'mint',
+    pinned: true,
+    favorite: true,
+    archived: false,
+    trashed: false,
+    reminderAt: new Date(Date.now() + 86400000).toISOString()
   },
   {
-    title: 'Small and mid cap names remain active amid stock-specific earnings momentum',
-    source: 'Daily Equity Brief',
-    url: 'https://www.bseindia.com/',
-    publishedAt: new Date().toISOString(),
-    summary: 'Analysts continue to prefer companies with steady cash flows, clean balance sheets, and visible order books.'
+    title: 'Reading list',
+    content: 'Books, articles, and loose ideas worth revisiting.\n\n> Capture first. Organize later.',
+    folder: 'Personal',
+    tags: ['ideas'],
+    color: 'sky',
+    pinned: false,
+    favorite: false,
+    archived: false,
+    trashed: false,
+    reminderAt: ''
   },
   {
-    title: 'Nifty 50 watchlist: financials, autos, and consumption stocks in focus',
-    source: 'India Markets',
-    url: 'https://www.nseindia.com/market-data/live-equity-market',
-    publishedAt: new Date().toISOString(),
-    summary: 'Traders are watching index heavyweights and sector rotation before the next macro data print.'
+    title: 'Meeting notes',
+    content: '### Product sync\n\n**Decisions**\n- Ship notes MVP with offline-friendly fallback\n- Add keyboard-friendly search\n\n**Next**\n- Review API model\n- Polish empty states',
+    folder: 'Work',
+    tags: ['meeting', 'product'],
+    color: 'amber',
+    pinned: false,
+    favorite: false,
+    archived: false,
+    trashed: false,
+    reminderAt: ''
   }
 ];
 
-async function fetchNews() {
-  if (!process.env.NEWS_API_KEY) {
-    return fallbackNews;
+function now() {
+  return new Date().toISOString();
+}
+
+function makeNote(payload = {}) {
+  const date = now();
+
+  return {
+    id: crypto.randomUUID(),
+    title: payload.title?.trim() || 'Untitled note',
+    content: payload.content || '',
+    folder: payload.folder?.trim() || 'Notes',
+    tags: Array.isArray(payload.tags) ? payload.tags.map((tag) => String(tag).trim()).filter(Boolean) : [],
+    color: payload.color || 'plain',
+    pinned: Boolean(payload.pinned),
+    favorite: Boolean(payload.favorite),
+    archived: Boolean(payload.archived),
+    trashed: Boolean(payload.trashed),
+    reminderAt: payload.reminderAt || '',
+    createdAt: date,
+    updatedAt: date
+  };
+}
+
+function normalizeNote(note) {
+  const raw = note.toObject ? note.toObject() : note;
+  return {
+    ...raw,
+    id: raw.id || raw._id?.toString()
+  };
+}
+
+let NoteModel = null;
+let memoryNotes = starterNotes.map(makeNote);
+
+async function connectMongo() {
+  if (!process.env.MONGODB_URI) {
+    return;
   }
 
-  const params = new URLSearchParams({
-    q: 'Nifty 50 OR NSE OR Indian stocks',
-    language: 'en',
-    sortBy: 'publishedAt',
-    pageSize: '8',
-    apiKey: process.env.NEWS_API_KEY
+  try {
+    const mongoose = await import('mongoose');
+    await mongoose.connect(process.env.MONGODB_URI);
+
+    const noteSchema = new mongoose.Schema(
+      {
+        title: { type: String, required: true, default: 'Untitled note' },
+        content: { type: String, default: '' },
+        folder: { type: String, default: 'Notes' },
+        tags: { type: [String], default: [] },
+        color: { type: String, default: 'plain' },
+        pinned: { type: Boolean, default: false },
+        favorite: { type: Boolean, default: false },
+        archived: { type: Boolean, default: false },
+        trashed: { type: Boolean, default: false },
+        reminderAt: { type: String, default: '' }
+      },
+      {
+        timestamps: true,
+        toJSON: {
+          virtuals: true,
+          versionKey: false,
+          transform: (_doc, ret) => {
+            ret.id = ret._id.toString();
+            delete ret._id;
+          }
+        }
+      }
+    );
+
+    NoteModel = mongoose.models.Note || mongoose.model('Note', noteSchema);
+    const count = await NoteModel.countDocuments();
+    if (!count) {
+      await NoteModel.insertMany(starterNotes);
+    }
+    console.log('MongoDB connected for notes storage');
+  } catch (error) {
+    console.warn(`MongoDB unavailable, using memory store: ${error.message}`);
+  }
+}
+
+function sortNotes(notes) {
+  return notes.sort((a, b) => {
+    if (a.pinned !== b.pinned) {
+      return a.pinned ? -1 : 1;
+    }
+    return new Date(b.updatedAt) - new Date(a.updatedAt);
   });
+}
 
-  const response = await fetch(`https://newsapi.org/v2/everything?${params}`);
-  if (!response.ok) {
-    return fallbackNews;
+async function listNotes(query = {}) {
+  if (NoteModel) {
+    const mongoQuery = {};
+    if (query.status === 'archive') mongoQuery.archived = true;
+    if (query.status === 'trash') mongoQuery.trashed = true;
+    if (!query.status || query.status === 'active') {
+      mongoQuery.archived = false;
+      mongoQuery.trashed = false;
+    }
+    if (query.folder) mongoQuery.folder = query.folder;
+    if (query.tag) mongoQuery.tags = query.tag;
+    if (query.favorite === 'true') mongoQuery.favorite = true;
+
+    const notes = await NoteModel.find(mongoQuery).sort({ pinned: -1, updatedAt: -1 });
+    return notes.map(normalizeNote);
   }
 
-  const payload = await response.json();
-  return (payload.articles || []).map((article) => ({
-    title: article.title,
-    source: article.source?.name || 'News',
-    url: article.url,
-    publishedAt: article.publishedAt,
-    summary: article.description || 'Latest Indian market update.'
+  return sortNotes(memoryNotes.filter((note) => {
+    if (query.status === 'archive' && !note.archived) return false;
+    if (query.status === 'trash' && !note.trashed) return false;
+    if ((!query.status || query.status === 'active') && (note.archived || note.trashed)) return false;
+    if (query.folder && note.folder !== query.folder) return false;
+    if (query.tag && !note.tags.includes(query.tag)) return false;
+    if (query.favorite === 'true' && !note.favorite) return false;
+    return true;
   }));
 }
 
+async function findNote(id) {
+  if (NoteModel) {
+    const note = await NoteModel.findById(id);
+    return note ? normalizeNote(note) : null;
+  }
+
+  return memoryNotes.find((note) => note.id === id) || null;
+}
+
+async function createNote(payload) {
+  const note = makeNote(payload);
+  if (NoteModel) {
+    const created = await NoteModel.create(note);
+    return normalizeNote(created);
+  }
+
+  memoryNotes.unshift(note);
+  return note;
+}
+
+async function updateNote(id, payload) {
+  const patch = {
+    ...payload,
+    tags: Array.isArray(payload.tags) ? payload.tags.map((tag) => String(tag).trim()).filter(Boolean) : undefined,
+    updatedAt: now()
+  };
+
+  Object.keys(patch).forEach((key) => patch[key] === undefined && delete patch[key]);
+
+  if (NoteModel) {
+    const updated = await NoteModel.findByIdAndUpdate(id, patch, { new: true });
+    return updated ? normalizeNote(updated) : null;
+  }
+
+  const index = memoryNotes.findIndex((note) => note.id === id);
+  if (index === -1) return null;
+  memoryNotes[index] = { ...memoryNotes[index], ...patch };
+  return memoryNotes[index];
+}
+
+async function deleteNote(id) {
+  if (NoteModel) {
+    const deleted = await NoteModel.findByIdAndDelete(id);
+    return Boolean(deleted);
+  }
+
+  const before = memoryNotes.length;
+  memoryNotes = memoryNotes.filter((note) => note.id !== id);
+  return before !== memoryNotes.length;
+}
+
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, database: NoteModel ? 'mongodb' : 'memory' });
 });
 
-app.get('/api/market-summary', (_req, res) => {
-  res.json({
-    nifty50,
-    breadth: {
-      advancing: 31,
-      declining: 19,
-      unchanged: 0
-    },
-    sectors: [
-      { name: 'Banking', changePercent: 0.91 },
-      { name: 'IT', changePercent: 0.63 },
-      { name: 'Auto', changePercent: -0.18 },
-      { name: 'Pharma', changePercent: 0.34 }
-    ]
+app.get('/api/notes', async (req, res) => {
+  const notes = await listNotes(req.query);
+  res.json({ notes });
+});
+
+app.get('/api/notes/:id', async (req, res) => {
+  const note = await findNote(req.params.id);
+  if (!note) {
+    return res.status(404).json({ message: 'Note not found' });
+  }
+  res.json({ note });
+});
+
+app.post('/api/notes', async (req, res) => {
+  const note = await createNote(req.body);
+  res.status(201).json({ note });
+});
+
+app.patch('/api/notes/:id', async (req, res) => {
+  const note = await updateNote(req.params.id, req.body);
+  if (!note) {
+    return res.status(404).json({ message: 'Note not found' });
+  }
+  res.json({ note });
+});
+
+app.delete('/api/notes/:id', async (req, res) => {
+  const deleted = await deleteNote(req.params.id);
+  if (!deleted) {
+    return res.status(404).json({ message: 'Note not found' });
+  }
+  res.status(204).end();
+});
+
+connectMongo().finally(() => {
+  app.listen(PORT, () => {
+    console.log(`Notes API running on http://localhost:${PORT}`);
   });
-});
-
-app.get('/api/companies', (req, res) => {
-  const segment = req.query.segment;
-  if (segment && companies[segment]) {
-    return res.json({ segment, companies: companies[segment] });
-  }
-
-  res.json(companies);
-});
-
-app.get('/api/news', async (_req, res) => {
-  try {
-    const news = await fetchNews();
-    res.json({ news });
-  } catch (error) {
-    res.json({ news: fallbackNews, warning: error.message });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`API running on http://localhost:${PORT}`);
 });
